@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -22,6 +21,7 @@ const io = new Server(server, {
 let waitingQueue = [];
 
 // A helper to match two users and let them chat in a private room
+// A helper to match two users and let them chat in a private room
 const matchTwoUsers = (socket1, socket2) => {
   // We'll create a private "room" for these two
   const roomId = `${socket1.id}#${socket2.id}`;
@@ -29,8 +29,8 @@ const matchTwoUsers = (socket1, socket2) => {
   socket2.join(roomId);
 
   // Let each socket know they are now paired
-  socket1.emit('matched', { partnerId: socket2.id });
-  socket2.emit('matched', { partnerId: socket1.id });
+  socket1.emit('matched', { partnerId: socket2.id, partnerCountry: socket2.userData.country });
+  socket2.emit('matched', { partnerId: socket1.id, partnerCountry: socket1.userData.country });
 
   // We’ll store the partner’s ID in a socket property for convenience
   socket1.partnerId = socket2.id;
@@ -41,27 +41,42 @@ const matchTwoUsers = (socket1, socket2) => {
   socket2.currentRoom = roomId;
 };
 
+
 // Handle connections
 io.on('connection', (socket) => {
   console.log(`New client connected: ${socket.id}`);
 
+  // New: Store user preferences
+  socket.userData = { country: null, ageConsent: false };
+
   // When a user indicates "I want to find a partner", we put them in the queue
-  socket.on('findPartner', () => {
-    // If someone is waiting in the queue, match them
-    if (waitingQueue.length > 0) {
-      const waitingSocket = waitingQueue.pop();
+  socket.on('findPartner', ({ country, ageConsent }) => {
+    if (!ageConsent) return; // If age consent is not true, don't allow to proceed
+    
+    // Save the user's country and age consent status
+    socket.userData.country = country;
+    socket.userData.ageConsent = ageConsent;
+
+    console.log(`User ${socket.id} is searching from ${country} with age consent: ${ageConsent}`);
+    console.log("Current Waiting Queue:", waitingQueue.map(s => ({ id: s.id, country: s.userData.country, ageConsent: s.userData.ageConsent })));
+
+    // If someone is waiting in the queue, try to match them
+    const compatibleSocketIndex = waitingQueue.findIndex(s => s.userData.ageConsent);
+
+    if (compatibleSocketIndex !== -1) {
+      const waitingSocket = waitingQueue.splice(compatibleSocketIndex, 1)[0];
       matchTwoUsers(waitingSocket, socket);
     } else {
       // Otherwise, add this one to the waiting queue
       waitingQueue.push(socket);
     }
-  });
+});
+
 
   // When a user sends a chat message
   socket.on('chatMessage', (msg) => {
     // If this user has a current room, broadcast the message to that room
     if (socket.currentRoom) {
-      // We'll just broadcast to the other person in the room
       io.to(socket.currentRoom).emit('chatMessage', {
         sender: socket.id,
         message: msg
@@ -84,7 +99,11 @@ io.on('connection', (socket) => {
         // If partner is still connected, we can put them back in queue
         partnerSocket.partnerId = null;
         partnerSocket.currentRoom = null;
-        waitingQueue.push(partnerSocket);
+
+        // Push the partner back into the queue if they are still connected
+        if (partnerSocket.connected) {
+          waitingQueue.push(partnerSocket);
+        }
       }
     }
   };
